@@ -1,144 +1,32 @@
-# 忽略Python编译文件
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
-
-# 分发 / 打包
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
+build/
+dist/
 
-# PyInstaller
-*.manifest
-*.spec
-
-# 单元测试 / 覆盖率报告
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# 环境变量文件
+# 环境与密钥
+.venv/
 .env
-.env.local
-.env.production
-.env.development
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+.env.*
+!.env.example
 
-# IDE配置文件
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# 操作系统文件
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# 日志文件
-*.log
-logs/
-
-# 数据库文件
+# 运行时数据（SQLite、设备上传的文件）
+data/
 *.db
-*.sqlite
 *.sqlite3
-
-# 临时文件
-tmp/
-temp/
-*.tmp
-
-# Celery相关
-celerybeat-schedule
-celerybeat.pid
-
-# Redis dump文件
 dump.rdb
 
-# 备份文件
-*.bak
-*.backup
+# 工具缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# 本地开发文件
-local_settings.py
-.local
-
-# 项目特定文件
-# 数据上传目录
-data/uploads/*
-!data/uploads/.gitkeep
-
-# SQLite数据库目录
-sqlite+aio./
-
-# 测试报告和临时文件
-*_demo_report_*.json
-*_report_*.json
-reconnection_test.log
-terminal_device_demo.log
-terminal_device_test.log
-
-# Docker卷数据
-postgres_data/
-redis_data/
-
-# 健康检查脚本
-health_check.bat
-
-# 演示和测试文件（包含敏感数据或临时文件）
-comprehensive_system_test.py
-test_*.py
-
-# 密钥和凭证文件
-*.key
-*.secret
-*.pem
-*.cert
-*.p12
-*.pfx
-
-# 包含敏感配置的开发文件
-# 注意：这些文件包含真实的API密钥和配置，仅用于本地开发
-# 请基于.example文件创建您自己的配置
+# IDE / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
 *.log
-*.out
-
-# API密钥和令牌文件
-*_keys.json
-*_tokens.json
-*_secrets.json
-
-# 本地测试数据
-test_data_*.json
-demo_data_*.json

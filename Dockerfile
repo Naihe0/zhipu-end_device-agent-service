@@ -1,39 +1,25 @@
-# 使用官方Python 3.11镜像作为基础
-FROM python:3.11-alpine
-
-# 设置工作目录
+# syntax=docker/dockerfile:1
+# 两个阶段使用同一个 Python 基础镜像，保证虚拟环境中的解释器路径一致
+FROM python:3.12-slim-bookworm AS builder
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
 WORKDIR /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project --no-dev --extra postgres
+COPY . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --extra postgres
 
-# 安装系统依赖
-RUN apk update && apk add --no-cache \
-    gcc \
-    musl-dev \
-    redis \
-    build-base \
-    libffi-dev
-
-# 复制依赖文件
-COPY requirements.txt .
-
-# 安装Python依赖
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 复制项目文件
-COPY . .
-
-# 创建数据目录
+FROM python:3.12-slim-bookworm
+RUN useradd --create-home --uid 1000 app
+COPY --from=builder --chown=app:app /app /app
+WORKDIR /app
+ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 HOST=0.0.0.0 PORT=8000 DATA_DIR=/app/data
+USER app
 RUN mkdir -p /app/data
-
-# 创建非root用户
-RUN adduser -D -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
-
-# 暴露端口
 EXPOSE 8000
-
-# 设置环境变量
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-
-# 默认启动命令
-CMD ["python", "main.py"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD python -c "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/health').status != 200)"
+CMD ["device-agent"]

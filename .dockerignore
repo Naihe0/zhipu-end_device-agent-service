@@ -1,63 +1,15 @@
-# Docker相关文件
-node_modules
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# 运行时文件
-*.pid
-*.seed
-*.pid.lock
-
-# Docker临时文件
-.dockerignore
-docker-compose.override.yml
-
-# IDE和编辑器文件
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# 操作系统文件
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Python编译文件
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# 环境变量和配置
+.git
+.github
+.venv
 .env
-.env.local
-.env.*.local
-
-# 日志文件
-logs/
-*.log
-
-# 数据库文件
-*.db
-*.sqlite
-*.sqlite3
+.env.*
+!.env.example
 data/
-
-# 缓存文件
-.cache/
-.pytest_cache/
-
-# 备份文件
-*.bak
-*.backup
-
-# 临时文件
-tmp/
-temp/
-*.tmp
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+docs/
+tests/
+*.md
+!README.md
