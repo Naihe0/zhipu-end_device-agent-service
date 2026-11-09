@@ -13,23 +13,8 @@
 - 这是一个标准的通信协议，让不同的AI代理之间可以互相对话和协作
 - 就像人与人之间有语言交流，AI代理之间也需要一套"语言"来沟通
 
-####    participant Cli    participant ESM as 事件流管理器<br/>(event_stream_manager.py)
-    participant Redis as Redis Streams<br/>(数据流存储)
-    participant DB as 数据库<br/>(SQLite/PostgreSQL)
-    participant MCP as MCP客户端<br/>(mcp_client.py)
-    participant Device as 终端设备<br/>(摄像头/传感器等) 客户端/外部Agent
-    participant API as FastAPI主应用<br/>(main_simple.py)
-    participant Auth as 认证中间件<br/>(HTTPBearer)
-    participant A2AServer as A2A服务器<br/>(zhipu_a2a_server.py)
-    participant TaskQueue as Celery任务队列<br/>(tasks.py)
-    participant Worker as Celery Worker<br/>(worker_manager.py)
-    participant TDM as 终端设备管理器<br/>(terminal_device_manager.py)
-    participant LLM as 多模态LLM代理<br/>(multimodal_llm_agent.py)
-    participant ESM as 事件流管理器<br/>(event_stream_manager.py)
-    participant Redis as Redis Streams<br/>(数据流存储)
-    participant DB as 数据库<br/>(SQLite/PostgreSQL)
-    participant MCP as MCP客户端<br/>(mcp_client.py)
-    participant Device as 终端设备<br/>(摄像头/传感器等)- 指各种智能设备：摄像头、传感器、机器人、IoT设备等
+#### 2. 什么是终端设备？
+- 指各种智能设备：摄像头、传感器、机器人、IoT设备等
 - 这些设备有自己的功能（拍照、测温、移动等），但需要"大脑"来协调
 
 #### 3. 我们的服务做什么？
@@ -114,26 +99,26 @@
 
 ### 技术架构 - 分层理解
 
-#### 第1层：用户接口层（前台接待）
-- **FastAPI主应用**：就像公司前台，接待所有来访者
-- **认证系统**：验证身份，确保安全
+#### 第1层：接入层（前台接待）
+- **A2A 端点**（官方 a2a-sdk）：接待其他 Agent 和用户，说标准的 A2A"语言"（同时兼容 1.0 与 0.3 两个版本）
+- **管理 REST API / WebSocket**：设备注册、数据上报、运维查询
+- **鉴权中间件**：可选的 Bearer Token，确保安全
 
-#### 第2层：业务逻辑层（各部门经理）
-- **A2A服务器**：翻译官，把A2A语言转成内部语言
-- **设备管理器**：设备部门经理，管理所有设备
-- **LLM代理**：智能分析师，理解用户意图
+#### 第2层：智能层（大脑）
+- **编排器 Orchestrator**：Gemini 的"函数调用"能力把每个设备工具、每个外部 Agent 都当成一个可调用的函数，由模型自己决定直接回答、调用设备还是委派外部 Agent，并能一次组合多个步骤
+- **意图识别监控 IntentMonitor**：持续"看"设备上报的文字、传感器读数、图片和声音，发现需要处理的情况就主动发起任务
 
-#### 第3层：任务执行层（具体执行者）
-- **异步任务队列**：任务分发中心，避免拥堵
-- **Worker进程**：具体干活的员工
+#### 第3层：能力层（各部门）
+- **设备服务**：设备户口本 + 通过 MCP 协议操作设备
+- **外部 Agent 服务**：外部专家通讯录 + 通过 A2A 协议委派任务
+- **数据接入**：把设备上报的数据整理后放进事件流
 
 #### 第4层：数据存储层（档案室和仓库）
-- **数据库**：重要档案室，存储设备信息、任务记录
-- **Redis**：临时仓库，存储实时数据流
+- **数据库**（SQLite / PostgreSQL）：设备信息、外部 Agent、A2A 任务、意图识别日志
+- **事件流**（Redis Streams）：设备实时数据；大文件单独放在文件系统
 
-#### 第5层：外部接口层（合作伙伴）
-- **MCP客户端**：与设备沟通的桥梁
-- **LLM服务**：外部智能顾问（GPT、智谱AI等）
+> 重构前的"异步任务队列 + Worker 进程"（Celery）已经移除：a2a-sdk 本身就能以非阻塞方式管理任务，
+> 客户端提交后可以立即拿到任务 ID，再查询或订阅进度。
 
 ### 实际工作流程演示
 
@@ -211,62 +196,44 @@
 ```mermaid
 sequenceDiagram
     participant User as 用户/外部Agent
-    participant API as API网关
-    participant A2A as A2A协议处理器
-    participant LLM as 智能分析引擎
-    participant DevMgr as 设备管理器
-    participant Device as 智能设备
-    participant DB as 数据存储
+    participant A2A as A2A端点
+    participant Orch as 编排器(Gemini)
+    participant Dev as 智能设备(MCP)
+    participant Ext as 外部Agent
+    participant Store as 事件流
+    participant Mon as 意图识别
 
-    Note over User,DB: 1. 设备注册阶段
-    Device->>+API: 设备注册请求
-    API->>+DevMgr: 验证并注册设备
-    DevMgr->>+DB: 保存设备信息
-    DevMgr->>+A2A: 更新服务能力
-    DevMgr-->>-API: 注册完成
-    API-->>-Device: 注册成功
+    Note over User,Mon: 1. 设备注册
+    Dev->>A2A: POST /api/devices（附带 MCP 地址）
+    A2A->>Dev: MCP tools/list 校验并获取工具
+    A2A-->>Dev: 注册成功，Agent Card 增加该设备技能
 
-    Note over User,DB: 2. 用户请求处理
-    User->>+API: A2A消息请求
-    API->>+A2A: 解析A2A协议
-    A2A->>+LLM: 分析用户意图
-    
+    Note over User,Mon: 2. 用户请求
+    User->>A2A: SendMessage
+    A2A->>Orch: 创建任务并交给编排器
     alt 需要设备操作
-        LLM->>+DevMgr: 匹配合适设备
-        DevMgr->>+Device: 执行设备操作
-        Device-->>-DevMgr: 返回执行结果
-        DevMgr-->>-LLM: 操作完成
-    else 需要外部Agent处理
-        LLM->>+User: 路由到专业Agent
-        Note right of LLM: 如：代码生成、数据分析、<br/>文档处理等专业任务
-        User-->>-LLM: 返回处理结果
-    else 纯文本回复
-        LLM->>LLM: 生成智能回复
+        Orch->>Dev: MCP tools/call
+        Dev-->>Orch: 执行结果
+    else 需要外部专业能力
+        Orch->>Ext: A2A SendMessage（必要时轮询 GetTask）
+        Ext-->>Orch: 处理结果
+    else 闲聊/常识
+        Orch->>Orch: 直接生成回答
     end
-    
-    LLM-->>-A2A: 处理结果
-    A2A->>+DB: 保存任务记录
-    A2A-->>-API: 返回响应
-    API-->>-User: 最终结果
+    Orch-->>A2A: 最终回答 + 工具调用记录
+    A2A-->>User: Task（completed，artifacts 中有结果）
 
-    Note over User,DB: 3. 设备数据流处理
-    Device->>+API: 上传数据流
-    API->>+DevMgr: 数据预处理
-    DevMgr->>+DB: 存储数据
-    
-    loop 智能监控
-        LLM->>+DB: 扫描新数据
-        LLM->>LLM: 分析是否需要行动
-        alt 触发自动任务
-            LLM->>+API: 自动发起A2A请求
+    Note over User,Mon: 3. 设备数据 → 自动任务
+    Dev->>Store: WebSocket 上报文字/传感器/图片/音频
+    loop 每 10 秒
+        Mon->>Store: 读取新数据
+        Mon->>Mon: Gemini 多模态分析（结构化输出）
+        opt 需要行动
+            Mon->>A2A: 提交自动任务（与外部请求同一链路）
+            A2A-->>Mon: 任务结果
+            Mon-->>Dev: 推送 task_result
         end
     end
-
-    Note over User,DB: 4. 系统监控
-    User->>+API: 查询系统状态
-    API->>+DevMgr: 检查设备状态
-    API->>+DB: 检查数据状态
-    API-->>-User: 返回系统健康状态
 ```
 
 ## 完整业务流程时序图
@@ -274,268 +241,162 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Client as 客户端/外部Agent
-    participant API as FastAPI主应用<br/>(main_simple.py)
-    participant Auth as 认证中间件<br/>(HTTPBearer)
-    participant A2AServer as A2A服务器<br/>(zhipu_a2a_server.py)
-    participant TaskQueue as Celery任务队列<br/>(tasks.py)
-    participant Worker as Celery Worker<br/>(worker_manager.py)
-    participant TDM as 终端设备管理器<br/>(terminal_device_manager.py)
-    participant LLM as 多模态LLM代理<br/>(multimodal_llm_agent.py)
-    participant ESM as 事件流管理器<br/>(event_stream_manager.py)
-    participant Redis as Redis Streams<br/>(数据流存储)
-    participant DB as 数据库<br/>(SQLite/PostgreSQL)
-    participant MCP as MCP客户端<br/>(mcp_client.py)
-    participant Device as 终端设备<br/>(IoT/智能设备)
+    participant API as FastAPI 应用<br/>(app.py)
+    participant Handler as A2A RequestHandler<br/>(a2a-sdk)
+    participant Exec as AgentExecutor<br/>(a2a/executor.py)
+    participant Orch as Orchestrator<br/>(services/orchestrator.py)
+    participant LLM as Gemini<br/>(services/llm.py)
+    participant DevSvc as DeviceService<br/>(services/devices.py)
+    participant MCP as MCPGateway<br/>(services/mcp_gateway.py)
+    participant Remote as RemoteAgentService<br/>(services/remote_agents.py)
+    participant Hub as ConnectionHub<br/>(services/connections.py)
+    participant Store as EventStore<br/>(Redis Streams)
+    participant Mon as IntentMonitor<br/>(services/intent_monitor.py)
+    participant DB as 数据库
+    participant Device as 终端设备 MCP Server
+    participant Ext as 外部 A2A Agent
 
-    Note over Client,Device: === 系统初始化阶段 ===
-    
-    API->>+DB: 创建数据库表结构
-    API->>+Worker: 启动Celery Worker进程
-    API->>+ESM: 启动EventStream维护任务
-    API->>+LLM: 启动多模态LLM代理
-    API->>+TDM: 从数据库加载现有设备
+    Note over Client,Ext: === 启动（lifespan） ===
+    API->>DB: 建表（设备 / 外部 Agent / 识别日志 / A2A 任务）
+    API->>Store: 连接事件流
+    API->>Mon: 启动意图识别循环
+    API->>DevSvc: 启动维护循环（设备探活、数据清理）
 
-    Note over Client,Device: === 设备注册流程 ===
-    
-    Device->>+API: POST /api/terminal-devices/register
-    Note right of Device: 设备注册信息包含:<br/>device_id, name, device_type,<br/>mcp_server_url, mcp_tools等
-    
-    API->>+Auth: 验证请求认证
-    Auth-->>-API: 认证通过/失败
-    
-    API->>+TDM: register_device(device_data)
-    TDM->>+DB: 验证设备是否已存在
-    TDM->>+MCP: 验证MCP服务器可访问性
-    MCP->>+Device: GET /mcp/capabilities
-    Device-->>-MCP: 返回MCP工具列表
-    MCP-->>-TDM: 验证成功
-    
-    TDM->>+DB: 保存设备信息到数据库
-    TDM->>TDM: 更新内存缓存
-    TDM->>+A2AServer: 更新Agent Card技能
-    A2AServer->>A2AServer: 动态添加设备技能
-    TDM-->>-API: 注册成功响应
-    API-->>-Device: HTTP 200 + 设备信息
+    Note over Client,Ext: === 设备注册 ===
+    Device->>API: POST /api/devices
+    API->>DevSvc: register()
+    DevSvc->>MCP: list_tools(mcp_url)
+    MCP->>Device: MCP initialize + tools/list
+    Device-->>MCP: 工具列表（名称、描述、inputSchema）
+    DevSvc->>DB: 保存设备与工具缓存
+    API-->>Device: 201 设备信息
 
-    Note over Client,Device: === A2A Agent Card获取 ===
-    
-    Client->>+API: GET /.well-known/agent-card.json
-    API->>+A2AServer: get_agent_card()
-    A2AServer->>+TDM: 获取所有注册设备能力
-    TDM-->>-A2AServer: 返回设备技能列表
-    A2AServer->>A2AServer: 动态构建Agent Card
-    A2AServer-->>-API: 返回完整Agent Card
-    API-->>-Client: JSON格式Agent Card
+    Note over Client,Ext: === Agent Card ===
+    Client->>API: GET /.well-known/agent-card.json
+    API->>DevSvc: 在线设备
+    API->>Remote: 可用外部 Agent
+    API-->>Client: 基础技能 + 每个设备一个技能 + 外部协作技能
 
-    Note over Client,Device: === A2A消息发送流程 ===
-    
-    Client->>+API: POST /api/a2a<br/>{method: "message/send", params: {...}}
-    Note right of Client: JSON-RPC 2.0格式:<br/>包含消息内容、意图等
-    
-    API->>API: 验证JSON-RPC 2.0格式
-    API->>+TaskQueue: process_a2a_request.delay(request_data)
-    TaskQueue-->>-API: 返回任务ID
-    
-    Note over TaskQueue,Worker: === 异步任务处理 ===
-    
-    TaskQueue->>+Worker: 分发任务到Worker进程
-    Worker->>+A2AServer: 调用request_handler
-    A2AServer->>+LLM: 分析消息意图
-    
-    alt 需要设备交互
-        LLM->>+TDM: 根据意图匹配设备能力
-        TDM-->>-LLM: 返回匹配的设备列表
-        LLM->>+MCP: 调用设备MCP工具
-        MCP->>+Device: 执行具体操作
-        Device-->>-MCP: 返回执行结果
-        MCP-->>-LLM: 操作结果
-    else 需要外部Agent处理
-        LLM->>+Client: 路由到专业外部Agent
-        Note right of LLM: 专业任务类型：<br/>- 代码生成和调试<br/>- 数据分析和可视化<br/>- 文档处理和翻译<br/>- 复杂计算任务
-        Client->>Client: 执行专业任务处理
-        Client-->>-LLM: 返回专业处理结果
-    else 仅需LLM处理
-        LLM->>LLM: 使用OpenAI/智谱AI生成回复
-    end
-    
-    LLM-->>-A2AServer: 处理结果
-    A2AServer->>+DB: 保存任务结果
-    A2AServer-->>-Worker: 返回响应消息
-    Worker-->>-TaskQueue: 任务完成
-    
-    API->>TaskQueue: task_result.get(timeout=60)
-    TaskQueue-->>API: 返回处理结果
-    API-->>-Client: JSON-RPC 2.0响应
-
-    Note over Client,Device: === 设备数据流处理 ===
-    
-    Device->>+API: WebSocket连接 /api/terminal-devices/ws/{device_id}
-    API->>+ESM: 建立设备数据流
-    
-    loop 设备数据上传
-        Device->>API: 发送设备数据(文本/文件/传感器数据)
-        API->>+ESM: add_to_stream(device_id, data)
-        
-        alt 小文件 (≤1MB)
-            ESM->>+Redis: 存储到Redis Stream
-        else 大文件 (>1MB)
-            ESM->>ESM: 保存到文件系统
-            ESM->>+Redis: 存储文件路径引用
-        end
-        
-        ESM-->>-API: 确认数据接收
-        API-->>Device: WebSocket ACK
-    end
-
-    Note over Client,Device: === 智能意图识别与自动处理 ===
-    
-    loop 定期扫描(每30秒)
-        LLM->>+ESM: scan_device_streams()
-        ESM->>+Redis: 获取所有设备的新数据
-        Redis-->>-ESM: 返回未处理数据
-        
-        loop 每个设备的新数据
-            ESM-->>-LLM: 设备数据
-            LLM->>+TDM: 获取设备system_prompt
-            TDM-->>-LLM: 设备上下文和能力
-            
-            LLM->>LLM: 基于system_prompt分析意图
-            
-            alt 需要执行任务
-                LLM->>+API: 构造A2A任务请求
-                API->>TaskQueue: 异步处理任务
-                Note right of LLM: 自动触发任务执行，<br/>无需人工干预
-            else 需要外部Agent处理
-                LLM->>+User: 直接调用外部专业Agent
-                Note right of LLM: 智能代理检测到需要<br/>专业能力的数据处理
-                User-->>-LLM: 专业处理结果
-                LLM->>+DB: 保存处理结果和日志
-            else 仅记录数据
-                LLM->>+DB: 保存意图识别日志
+    Note over Client,Ext: === A2A 请求 ===
+    Client->>Handler: SendMessage / SendStreamingMessage
+    Handler->>DB: 保存 Task(submitted)
+    Handler->>Exec: execute(context, event_queue)
+    Exec->>Handler: Task(working)「正在分析请求…」
+    Exec->>Orch: run(用户消息, 同 contextId 的历史)
+    Orch->>DevSvc: 在线设备的工具
+    Orch->>Remote: 可用外部 Agent
+    loop 最多 ORCHESTRATOR_MAX_STEPS 轮
+        Orch->>LLM: 对话 + 函数声明（dev__* / agent__*）
+        LLM-->>Orch: 文本 或 function call（可并行多个）
+        alt 设备工具 dev__*
+            Orch->>Exec: 进度「调用设备 X 的工具 Y」
+            Orch->>DevSvc: call_tool()
+            DevSvc->>MCP: call_tool()
+            MCP->>Device: tools/call
+            Device-->>MCP: 结果
+        else 外部 Agent agent__*
+            Orch->>Remote: send(message)
+            Remote->>Ext: A2A SendMessage
+            loop 直到完成或超时
+                Remote->>Ext: GetTask
             end
+            Ext-->>Remote: 结果
+        end
+        Orch->>LLM: 回传 function response
+    end
+    Orch-->>Exec: 最终回答 + 工具调用记录
+    Exec->>Handler: artifacts: response / tool_calls
+    Exec->>Handler: Task(completed)
+    Handler->>DB: 保存最终 Task
+    Handler-->>Client: Task（流式请求则通过 SSE 逐步推送）
+
+    Note over Client,Ext: === 任务查询 / 取消 ===
+    Client->>Handler: GetTask / CancelTask
+    Handler->>DB: 读取任务
+    Handler-->>Client: 任务状态与结果
+
+    Note over Client,Ext: === 设备数据流 ===
+    Device->>Hub: WS /api/devices/{id}/ws
+    Hub-->>Device: welcome
+    loop 数据上报
+        Device->>Hub: text / sensor_data / media / MEDIA: 二进制帧
+        alt 小于 INLINE_BLOB_MAX_BYTES
+            Hub->>Store: 事件内联存储
+        else 大文件
+            Hub->>Store: 写入 data/blobs，事件存引用
+        end
+        Hub-->>Device: ack(event_id)
+    end
+
+    Note over Client,Ext: === 多模态意图识别 ===
+    loop 每 INTENT_SCAN_INTERVAL_SECONDS
+        Mon->>Store: read_new（消费组 intent-monitor）
+        Mon->>DevSvc: 设备信息与 system_prompt
+        Mon->>LLM: 文本 + 传感器 JSON + 图片/音频原始数据 → IntentAnalysis(JSON schema)
+        Mon->>DB: 保存识别日志
+        opt 需要行动且置信度达标
+            Mon->>Handler: 进程内提交 SendMessage（与外部请求同一链路）
+            Handler-->>Mon: Task 结果
+            Mon->>DB: 日志记录 task_id / 状态 / 结果
+            Mon->>Hub: 推送 task_result
+            Hub-->>Device: task_result
         end
     end
 
-    Note over Client,Device: === 任务状态查询 ===
-    
-    Client->>+API: POST /api/a2a<br/>{method: "tasks/get", params: {id: "task_id"}}
-    API->>+TaskQueue: process_a2a_request.delay()
-    TaskQueue->>+Worker: 查询任务状态
-    Worker->>+DB: 获取任务状态和结果
-    DB-->>-Worker: 任务信息
-    Worker-->>-TaskQueue: 任务状态
-    API->>TaskQueue: 获取结果
-    TaskQueue-->>API: 任务状态响应
-    API-->>-Client: JSON-RPC 2.0任务状态
-
-    Note over Client,Device: === 推送通知处理 ===
-    
-    API->>+API: POST /api/a2a/notifications<br/>(外部Agent推送)
-    API->>+DB: 更新任务状态
-    API->>+DB: 保存到消息收件箱
-    API-->>-Client: 确认通知接收
-
-    Note over Client,Device: === 系统监控与维护 ===
-    
-    Client->>+API: GET /health
-    API->>+DB: 检查数据库连接
-    API->>+Worker: 检查Worker状态
-    API-->>-Client: 系统健康状态
-
-    loop 定期维护(每小时)
-        ESM->>+Redis: 清理过期数据流
-        ESM->>ESM: 清理临时文件
-        TDM->>+Device: 设备心跳检查
-        Device-->>-TDM: 心跳响应
-        TDM->>+DB: 更新设备在线状态
-    end
-
-    Note over Client,Device: === 错误处理与恢复 ===
-    
-    alt 设备离线
-        TDM->>TDM: 标记设备离线
-        TDM->>+A2AServer: 移除设备技能
-        A2AServer->>A2AServer: 更新Agent Card
-    end
-    
-    alt 任务执行失败
-        Worker->>+DB: 记录错误日志
-        Worker->>Worker: 重试机制(最多3次)
-        Worker-->>API: 返回错误响应
-    end
-    
-    alt WebSocket连接断开
-        API->>API: 自动重连机制
-        API->>+ESM: 恢复数据流
+    Note over Client,Ext: === 维护 ===
+    loop 每 MAINTENANCE_INTERVAL_SECONDS
+        DevSvc->>Device: 探测长时间无活动的设备（MCP tools/list）
+        DevSvc->>DB: 更新在线状态与工具缓存
+        API->>Store: 清理超过保留期的事件与文件
     end
 ```
 
 ## 主要组件职责说明
 
-### 1. FastAPI主应用 (main_simple.py)
-- **职责**: API网关、路由分发、CORS处理
-- **关键功能**: JSON-RPC 2.0协议处理、认证验证、错误处理
-- **交互对象**: 客户端、A2A服务器、任务队列
-
-### 2. A2A服务器 (zhipu_a2a_server.py)
-- **职责**: A2A协议实现、Agent Card管理
-- **关键功能**: 消息处理、任务分发、推送通知
-- **基于**: 官方a2a-python SDK
-
-### 3. 异步任务系统 (tasks.py + worker_manager.py)
-- **职责**: 长时间任务异步处理、负载均衡
-- **关键功能**: Celery任务队列、Worker进程管理
-- **处理内容**: A2A请求、设备交互、LLM调用
-
-### 4. 终端设备管理器 (terminal_device_manager.py)
-- **职责**: 设备生命周期管理、能力注册
-- **关键功能**: 设备注册、MCP验证、Agent Card动态更新
-- **数据存储**: SQLite/PostgreSQL
-
-### 5. 多模态LLM代理 (multimodal_llm_agent.py)
-- **职责**: 智能意图识别、自动任务触发
-- **关键功能**: 数据流扫描、意图分析、任务构造
-- **LLM支持**: OpenAI GPT、智谱GLM
-
-### 6. 事件流管理器 (event_stream_manager.py)
-- **职责**: 数据流存储、大文件处理
-- **关键功能**: Redis Streams管理、混合存储策略
-- **存储策略**: 小文件Redis、大文件文件系统
+| 组件 | 文件 | 职责 |
+| --- | --- | --- |
+| 应用工厂 | `app.py` | 创建 FastAPI 应用、挂载 REST 路由与 A2A 路由、异常映射、可选鉴权 |
+| 依赖容器 | `container.py` | 创建所有服务实例，启动/停止后台任务（意图识别、维护） |
+| A2A 请求处理 | a2a-sdk `DefaultRequestHandler` | JSON-RPC 分发、任务生命周期、SSE 流式、取消、推送通知、`DatabaseTaskStore` 持久化 |
+| AgentExecutor | `a2a/executor.py` | 把 A2A 消息（文本/图片/音频/数据）交给编排器，发布进度与结果 |
+| Agent Card | `a2a/card.py` | 基础信息来自配置，技能随在线设备与外部 Agent 动态生成 |
+| 编排器 | `services/orchestrator.py` | Gemini function calling：设备工具、外部 Agent、直接回答；多轮上下文 |
+| 意图识别 | `services/intent_monitor.py` | 读取事件流新数据，多模态分析，必要时自动提交 A2A 任务并回推设备 |
+| 设备服务 | `services/devices.py` | 设备注册表、工具缓存、在线状态、探活 |
+| MCP 网关 | `services/mcp_gateway.py` | 官方 MCP SDK 客户端（Streamable HTTP） |
+| 外部 Agent | `services/remote_agents.py` | 通过 Agent Card 注册，委派任务并轮询结果 |
+| 数据接入 | `services/connections.py` | WebSocket 连接管理、HTTP/WS 数据解析入库、向设备推送 |
+| 事件流 | `services/event_store.py` | Redis Streams（消费组语义）；另有供测试用的内存实现；大文件写入文件系统 |
 
 ## 数据流向图
 
 ```mermaid
 graph TB
-    A[客户端/外部Agent] -->|A2A消息| B[FastAPI主应用]
-    B -->|异步任务| C[Celery Worker]
-    C -->|调用| D[A2A服务器]
-    D -->|意图分析| E[多模态LLM代理]
-    E -->|设备查询| F[终端设备管理器]
-    F -->|MCP调用| G[MCP客户端]
-    G -->|设备操作| H[终端设备]
-    
-    H -->|数据上传| I[WebSocket]
-    I -->|数据流| J[事件流管理器]
-    J -->|存储| K[Redis Streams]
-    J -->|大文件| L[文件系统]
-    
-    E -->|扫描数据| K
-    E -->|自动触发| B
-    
-    F -->|设备信息| M[数据库]
-    D -->|任务状态| M
-    C -->|结果| M
-    
-    N[推送通知] -->|外部Agent| B
-    B -->|状态更新| M
+    A[客户端/外部Agent] -->|A2A JSON-RPC| B[A2A RequestHandler]
+    B --> C[AgentExecutor]
+    C --> D[Orchestrator]
+    D -->|function calling| L[Gemini]
+    D -->|MCP tools/call| H[终端设备]
+    D -->|A2A 委派| X[外部 A2A Agent]
+
+    H -->|WebSocket / HTTP 上报| I[数据接入]
+    I --> J[事件流]
+    J -->|大文件| K[文件系统]
+    J --> M[IntentMonitor]
+    M -->|多模态分析| L
+    M -->|自动任务| B
+    M -->|task_result| H
+
+    B -->|任务| DB[(数据库)]
+    D -.->|设备/Agent 信息| DB
+    M -->|识别日志| DB
 ```
 
 ## 关键特性
 
-1. **异步处理**: 所有A2A请求通过Celery异步处理，避免阻塞
-2. **智能路由**: 基于LLM的意图识别和设备能力匹配
-3. **数据流管理**: Redis Streams + 混合存储，支持大文件
-4. **设备生命周期**: 完整的设备注册、监控、离线处理
-5. **标准兼容**: 严格遵循A2A协议v0.2.6规范
-6. **自动化**: 智能代理自动扫描设备数据并触发任务
-7. **高可用**: Worker集群、连接重试、错误恢复机制
+1. **标准协议**：A2A 由官方 a2a-sdk 实现（1.0，兼容 0.3），设备通信使用官方 MCP SDK
+2. **原生工具调用**：设备工具与外部 Agent 都是 Gemini 的函数声明，路由决策与参数提取一步完成，可多步组合
+3. **非阻塞任务**：任务立即可查询，支持流式进度、取消、推送通知，结果持久化在数据库
+4. **多模态**：图片、音频直接交给 Gemini 理解，无需额外的语音转写环节
+5. **自动化闭环**：设备数据 → 意图识别 → 自动任务 → 结果推送回设备
+6. **本机与容器一致**：本机使用 Redis（WSL）+ SQLite 或 PostgreSQL，docker compose 使用 PostgreSQL + Redis；测试在真实服务上运行

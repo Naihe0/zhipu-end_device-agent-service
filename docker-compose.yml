@@ -1,70 +1,75 @@
-# A2A Agent Service - Docker Compose 配置
-# 默认使用 SQLite 数据库，轻量级部署
+# 完整部署栈：本服务 + PostgreSQL + Redis Streams + 模拟摄像头 (MCP) + 模拟天气 Agent (A2A)
+# 需要在 .env 中设置 GEMINI_API_KEY 与 POSTGRES_APP_PASSWORD，然后: docker compose up --build
+# 容器内注册设备/Agent 时使用服务名：
+#   mcp_url  = http://mock-device:9001/mcp
+#   card_url = http://mock-agent:9002/.well-known/agent-card.json
 services:
-  # Redis 消息队列
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # 主应用服务
   app:
     build: .
-    ports:
-      - "8000:8000"
+    ports: ["8000:8000"]
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./data/a2a_agent.db
-      - REDIS_URL=redis://redis:6379
-      - DEBUG=True
-      - LOG_LEVEL=INFO
-      - DOCKER_ENV=true
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-demo-key}
-      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-demo-key}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?在 .env 中设置 GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      API_TOKEN: ${API_TOKEN:-}
+      DATABASE_URL: postgresql+asyncpg://device_agent:${POSTGRES_APP_PASSWORD:?在 .env 中设置 POSTGRES_APP_PASSWORD}@postgres:5432/device_agent
+      EVENT_STORE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+    volumes: [app_data:/app/data]
     depends_on:
-      redis:
-        condition: service_healthy
-    volumes:
-      - .:/app
-      - sqlite_data:/app/data
-    command: >
-      sh -c "
-        mkdir -p /app/data &&
-        pip install aiosqlite &&
-        python scripts/init_db.py --with-demo-data &&
-        python main.py
-      "
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
-  # Celery Worker 服务
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
+  postgres:
+    image: postgres:18-alpine
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./data/a2a_agent.db
-      - REDIS_URL=redis://redis:6379
-      - DOCKER_ENV=true
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-demo-key}
-      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-demo-key}
-    depends_on:
-      redis:
-        condition: service_healthy
-    volumes:
-      - .:/app
-      - sqlite_data:/app/data
-    command: >
-      sh -c "
-        sleep 15 &&
-        pip install aiosqlite &&
-        celery -A src.async_execution.worker_app:celery_app worker --loglevel=info --concurrency=4 --hostname=worker_1@%h
-      "
+      POSTGRES_USER: device_agent
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:?在 .env 中设置 POSTGRES_APP_PASSWORD}
+      POSTGRES_DB: device_agent
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U device_agent -d device_agent"]
+      interval: 5s
+      retries: 10
+    volumes: [postgres_data:/var/lib/postgresql]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    volumes: [redis_data:/data]
+
+  mock-device:
+    build: .
+    command: ["python", "-m", "device_agent.demo.mock_device", "--host", "0.0.0.0", "--port", "9001"]
+    ports: ["9001:9001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9001), 2)"]
+      interval: 5s
+      retries: 10
+
+  mock-agent:
+    build: .
+    command:
+      - python
+      - -m
+      - device_agent.demo.mock_agent
+      - --host=0.0.0.0
+      - --port=9002
+      - --public-url=http://mock-agent:9002
+    ports: ["9002:9002"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:9002/.well-known/agent-card.json', timeout=2)
+      interval: 5s
+      retries: 10
 
 volumes:
+  app_data:
+  postgres_data:
   redis_data:
-  sqlite_data:
