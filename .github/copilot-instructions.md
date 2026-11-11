@@ -14,4 +14,8 @@
 
 7. LLM access goes through the `LLMClient` protocol in `src/device_agent/services/llm.py` (Gemini via `google-genai`). Prefer native function calling and structured output (Pydantic schemas) over prompting the model to emit parseable text.
 
-8. Run `uv run ruff check src tests`, `uv run ruff format src tests` and `uv run pytest` before finishing a change.
+8. Schema changes go through Alembic: edit `src/device_agent/models.py`, then `uv run alembic revision --autogenerate -m "..."` and review the generated script in `src/device_agent/migrations/versions/`. Never rely on `create_all`. `tests/test_migrations.py` fails if models and migrations diverge. Remember that a2a-sdk's own tables (e.g. `tasks.context_id` is VARCHAR(36)) constrain IDs we pass to it.
+
+9. Device-reported data is untrusted input. Auto tasks (origin=device) must keep going through the tool policy in `services/policy.py` (MCP tool annotations + per-device `tool_policies`); do not add code paths that let device-originated tasks call tools without it.
+
+10. Run `uv run ruff check src tests`, `uv run ruff format src tests` and `uv run pytest` before finishing a change.

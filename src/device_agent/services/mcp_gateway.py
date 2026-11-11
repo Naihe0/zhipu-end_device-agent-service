@@ -25,9 +25,15 @@ class ToolSpec:
     name: str
     description: str
     input_schema: dict[str, Any]
+    annotations: dict[str, Any]  # MCP 工具注解（readOnlyHint / destructiveHint / ...），用于默认审批策略
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "description": self.description, "input_schema": self.input_schema}
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.input_schema,
+            "annotations": self.annotations,
+        }
 
 
 @dataclass(slots=True)
@@ -67,7 +73,14 @@ class MCPGateway:
         except Exception as exc:
             raise MCPConnectionError(f"无法连接 MCP Server {url}: {exc}") from exc
         return [
-            ToolSpec(name=t.name, description=t.description or "", input_schema=t.input_schema or {})
+            ToolSpec(
+                name=t.name,
+                description=t.description or "",
+                input_schema=t.input_schema or {},
+                annotations=t.annotations.model_dump(by_alias=True, exclude_none=True)
+                if t.annotations
+                else {},
+            )
             for t in result.tools
         ]
 

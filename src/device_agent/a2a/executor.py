@@ -2,6 +2,9 @@
 
 任务生命周期、持久化（DatabaseTaskStore）、流式推送（SSE）、取消与推送通知均由 a2a-sdk
 的 DefaultRequestHandler 负责，这里只实现业务逻辑。
+
+任务来源（origin）取自服务端的 ServerCallContext.state，而不是消息里的 metadata：
+外部 JSON-RPC 请求一律是 client；只有进程内的 LocalA2AClient（意图识别）能标记为 device。
 """
 
 import json
@@ -9,13 +12,7 @@ import logging
 import uuid
 from typing import Any
 
-from a2a.helpers import (
-    get_data_parts,
-    get_message_text,
-    new_data_part,
-    new_task_from_user_message,
-    new_text_part,
-)
+from a2a.helpers import new_data_part, new_task_from_user_message, new_text_part
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.context import ServerCallContext
 from a2a.server.events import EventQueue
@@ -26,13 +23,14 @@ from google.genai import types
 from google.protobuf.json_format import MessageToDict
 
 from device_agent.services.llm import LLMError
-from device_agent.services.orchestrator import ConversationMemory, Orchestrator
+from device_agent.services.memory import RESPONSE_ARTIFACT, TOOL_CALLS_ARTIFACT, ConversationMemory
+from device_agent.services.orchestrator import Orchestrator, RunContext
+from device_agent.services.policy import Origin
 
 logger = logging.getLogger(__name__)
 
 INLINE_MIME_PREFIXES = ("image/", "audio/", "video/", "application/pdf", "text/")
-TOOL_CALLS_ARTIFACT = "tool_calls"
-RESPONSE_ARTIFACT = "response"
+ORIGIN_STATE_KEY = "origin"
 
 
 def to_genai_parts(message: Message) -> list[types.Part]:
@@ -85,11 +83,15 @@ class DeviceAgentExecutor(AgentExecutor):
         async def progress(text: str) -> None:
             await updater.update_status(TaskState.TASK_STATE_WORKING, say(text))
 
+        origin = Origin(context.call_context.state.get(ORIGIN_STATE_KEY, Origin.CLIENT))
         try:
+            history = await self._memory.history(
+                task.context_id, call_context=context.call_context, exclude_task_id=task.id
+            )
             result = await self._orchestrator.run(
                 to_genai_parts(message),
-                history=self._memory.history(task.context_id),
-                context_id=task.context_id,
+                history=history,
+                run=RunContext(origin=origin, context_id=task.context_id, task_id=task.id),
                 on_progress=progress,
             )
         except LLMError as exc:
@@ -97,7 +99,6 @@ class DeviceAgentExecutor(AgentExecutor):
             await updater.failed(say(str(exc)))
             return
 
-        self._memory.append(task.context_id, get_message_text(message) or "[多模态输入]", result.text)
         await updater.add_artifact([new_text_part(result.text)], name=RESPONSE_ARTIFACT)
         if result.tool_calls:
             await updater.add_artifact(
@@ -108,14 +109,6 @@ class DeviceAgentExecutor(AgentExecutor):
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(event_queue, context.task_id or "", context.context_id or "")
         await updater.cancel(updater.new_agent_message([new_text_part("任务已取消")]))
-
-
-def tool_calls_of(task: Task) -> list[dict[str, Any]]:
-    for artifact in task.artifacts:
-        if artifact.name == TOOL_CALLS_ARTIFACT:
-            data = get_data_parts(artifact.parts)
-            return data[0] if data and isinstance(data[0], list) else []
-    return []
 
 
 class LocalA2AClient:
@@ -131,6 +124,7 @@ class LocalA2AClient:
         context_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         wait: bool = True,
+        origin: Origin = Origin.CLIENT,
     ) -> Task | Message:
         message = Message(
             message_id=str(uuid.uuid4()),
@@ -142,4 +136,5 @@ class LocalA2AClient:
             message.metadata.update(metadata)
         request = SendMessageRequest(message=message)
         request.configuration.return_immediately = not wait
-        return await self._handler.on_message_send(request, ServerCallContext())
+        context = ServerCallContext(state={ORIGIN_STATE_KEY: origin.value})
+        return await self._handler.on_message_send(request, context)

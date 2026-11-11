@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, AnyHttpUrl, BaseModel, ConfigDict, Field
 
-from device_agent.models import DeviceType
+from device_agent.models import DeviceType, ToolPolicyAction
 
 DEVICE_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,100}$"
 
@@ -27,6 +27,11 @@ class DeviceRegister(BaseModel):
     system_prompt: str | None = Field(default=None, description="设备特定的意图识别提示词")
     supported_data_types: list[str] = Field(default_factory=list)
     hardware_info: dict[str, Any] = Field(default_factory=dict)
+    tool_policies: dict[str, ToolPolicyAction] = Field(
+        default_factory=dict,
+        description="按工具名覆盖自动任务的默认策略（默认按 MCP 工具注解判断）：allow / confirm / deny",
+        examples=[{"reboot_device": "deny"}],
+    )
 
 
 class DeviceUpdate(BaseModel):
@@ -40,12 +45,14 @@ class DeviceUpdate(BaseModel):
     system_prompt: str | None = None
     supported_data_types: list[str] | None = None
     hardware_info: dict[str, Any] | None = None
+    tool_policies: dict[str, ToolPolicyAction] | None = None
 
 
 class ToolOut(BaseModel):
     name: str
     description: str = ""
     input_schema: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
 
 
 class DeviceOut(BaseModel):
@@ -61,6 +68,7 @@ class DeviceOut(BaseModel):
     supported_data_types: list[str]
     hardware_info: dict[str, Any]
     tools: list[ToolOut]
+    tool_policies: dict[str, str]
     is_online: bool
     ws_connected: bool = False
     last_seen: datetime | None
@@ -166,11 +174,57 @@ class IntentLogOut(BaseModel):
     action_required: bool
     instruction: str
     priority: str
+    category: str
+    incident_id: str | None
     task_id: str | None
     task_state: str | None
     result_text: str | None
     error: str | None
     created_at: datetime
+
+
+# ---------- 事件与审批 ----------
+
+
+class IncidentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    incident_id: str
+    device_id: str
+    status: str
+    title: str
+    trigger_count: int
+    opened_at: datetime
+    last_triggered_at: datetime
+    closed_at: datetime | None
+
+
+class ApprovalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    approval_id: str
+    status: str
+    device_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    reason: str
+    task_id: str | None
+    context_id: str | None
+    decision_note: str | None
+    result: Any = None
+    error: str | None
+    created_at: datetime
+    expires_at: datetime
+    decided_at: datetime | None
+
+
+class IncidentDetailOut(IncidentOut):
+    intents: list[IntentLogOut] = Field(default_factory=list)
+    approvals: list[ApprovalOut] = Field(default_factory=list)
+
+
+class ApprovalDecision(BaseModel):
+    note: str | None = Field(default=None, description="操作员备注，会写入记录并进入后续任务的上下文")
 
 
 # ---------- 便捷对话 ----------

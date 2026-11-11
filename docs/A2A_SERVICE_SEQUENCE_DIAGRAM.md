@@ -332,16 +332,35 @@ sequenceDiagram
     loop 每 INTENT_SCAN_INTERVAL_SECONDS
         Mon->>Store: read_new（消费组 intent-monitor）
         Mon->>DevSvc: 设备信息与 system_prompt
-        Mon->>LLM: 文本 + 传感器 JSON + 图片/音频原始数据 → IntentAnalysis(JSON schema)
+        Mon->>DB: 设备进行中的事件及其处理记录、待审批
+        Mon->>LLM: 设备信息 + 事件上下文 + <device_data>（文本/传感器/图片/音频）→ IntentAnalysis(JSON schema)
         Mon->>DB: 保存识别日志
         opt 需要行动且置信度达标
-            Mon->>Handler: 进程内提交 SendMessage（与外部请求同一链路）
-            Handler-->>Mon: Task 结果
-            Mon->>DB: 日志记录 task_id / 状态 / 结果
-            Mon->>Hub: 推送 task_result
-            Hub-->>Device: task_result
+            Mon->>DB: 归入进行中的事件（或开启新事件）
+            alt 同类处理进行中 / 冷却期内（用户指令除外）
+                Mon->>DB: 记为 suppressed，合并到事件
+            else
+                Mon->>Handler: 进程内提交 SendMessage（origin=device，contextId=事件 ID）
+                Handler->>Exec: execute()
+                Exec->>DB: 按 contextId 从任务表重建历史（含之前的工具调用与审批状态）
+                Exec->>Orch: run(origin=device)
+                opt 调用的工具不是只读/非破坏性（MCP 注解）
+                    Orch->>DB: 登记待审批，不执行
+                end
+                Handler-->>Mon: Task 结果
+                Mon->>DB: 日志记录 task_id / 状态 / 结果
+                Mon->>Hub: 推送 task_result
+                Hub-->>Device: task_result
+            end
         end
     end
+
+    Note over Client,Ext: === 人工审批 ===
+    Client->>API: POST /api/approvals/{id}/approve
+    API->>DevSvc: 按登记时的原始参数调用工具（不经过模型）
+    DevSvc->>Device: MCP tools/call
+    API->>DB: 记录结果（同一事件后续任务的历史中可见）
+    API->>Hub: 推送 approval_result
 
     Note over Client,Ext: === 维护 ===
     loop 每 MAINTENANCE_INTERVAL_SECONDS
@@ -361,7 +380,10 @@ sequenceDiagram
 | AgentExecutor | `a2a/executor.py` | 把 A2A 消息（文本/图片/音频/数据）交给编排器，发布进度与结果 |
 | Agent Card | `a2a/card.py` | 基础信息来自配置，技能随在线设备与外部 Agent 动态生成 |
 | 编排器 | `services/orchestrator.py` | Gemini function calling：设备工具、外部 Agent、直接回答；多轮上下文 |
-| 意图识别 | `services/intent_monitor.py` | 读取事件流新数据，多模态分析，必要时自动提交 A2A 任务并回推设备 |
+| 意图识别 | `services/intent_monitor.py` | 读取事件流新数据，多模态分析，归入事件、冷却合并，必要时自动提交 A2A 任务并回推设备 |
+| 会话记忆 | `services/memory.py` | 按 contextId 从 A2A 任务表重建历史（含工具调用摘要与审批状态），重启后仍在 |
+| 事件 | `services/incidents.py` | 同一设备相关触发的归并；事件 ID 即自动任务的 contextId |
+| 工具策略 / 审批 | `services/policy.py` · `services/approvals.py` | 按 MCP 工具注解判断自动任务能否直接执行；需要确认的调用登记审批，批准后按原参数执行 |
 | 设备服务 | `services/devices.py` | 设备注册表、工具缓存、在线状态、探活 |
 | MCP 网关 | `services/mcp_gateway.py` | 官方 MCP SDK 客户端（Streamable HTTP） |
 | 外部 Agent | `services/remote_agents.py` | 通过 Agent Card 注册，委派任务并轮询结果 |

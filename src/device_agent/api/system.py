@@ -5,11 +5,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from device_agent.a2a.executor import tool_calls_of
 from device_agent.container import Container, get_container
 from device_agent.database import utcnow
 from device_agent.schemas import ChatRequest, ChatResponse
 from device_agent.services.llm import GeminiLLM
+from device_agent.services.memory import tool_calls_of
 from device_agent.services.remote_agents import task_text
 
 router = APIRouter(tags=["系统"])

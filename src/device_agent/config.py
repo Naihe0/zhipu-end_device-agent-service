@@ -59,7 +59,12 @@ class Settings(BaseSettings):
 
     # --- 编排 ---
     orchestrator_max_steps: int = Field(default=6, description="一次请求内最多的工具调用轮数")
-    conversation_max_turns: int = Field(default=20, description="每个 contextId 保留的对话轮数")
+    conversation_max_turns: int = Field(
+        default=20, description="同一 contextId 下带入模型的历史任务数上限（历史从任务表重建）"
+    )
+    conversation_window_hours: float = Field(
+        default=24, description="只带入最近这段时间内更新过的历史任务；更早的不再进入模型上下文"
+    )
 
     # --- 终端设备 / MCP ---
     mcp_timeout_seconds: float = 15.0
@@ -81,6 +86,16 @@ class Settings(BaseSettings):
     intent_max_media_bytes: int = Field(
         default=8 * 1024 * 1024, description="单次分析中内联给模型的媒体数据总上限"
     )
+    incident_quiet_minutes: float = Field(
+        default=30, description="事件超过这段时间没有新的触发即自动关闭；之后的触发会开启新事件"
+    )
+    intent_action_cooldown_seconds: float = Field(
+        default=120,
+        description="同一事件中同类意图两次自动处理的最小间隔；期间的触发被合并（用户指令类不受限）",
+    )
+
+    # --- 自动任务的工具审批 ---
+    approval_ttl_minutes: float = Field(default=30, description="待审批的工具调用超过该时长未处理即过期")
 
     @property
     def blob_dir(self) -> Path:

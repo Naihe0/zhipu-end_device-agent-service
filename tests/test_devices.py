@@ -14,14 +14,13 @@ def test_health_and_root(client: TestClient):
 
 def test_register_validates_mcp_and_caches_tools(client: TestClient, camera):
     assert camera["is_online"] is True
-    assert {t["name"] for t in camera["tools"]} == {
-        "capture_image",
-        "analyze_scene",
-        "read_sensor_data",
-        "set_light",
-    }
-    schema = next(t for t in camera["tools"] if t["name"] == "set_light")["input_schema"]
-    assert schema["required"] == ["on"]
+    tools = {t["name"]: t for t in camera["tools"]}
+    assert set(tools) == {"capture_image", "analyze_scene", "read_sensor_data", "set_light", "reboot_device"}
+    assert tools["set_light"]["input_schema"]["required"] == ["on"]
+    # MCP 工具注解被缓存下来，用于自动任务的默认审批策略
+    assert tools["read_sensor_data"]["annotations"]["readOnlyHint"] is True
+    assert tools["set_light"]["annotations"]["destructiveHint"] is False
+    assert tools["reboot_device"]["annotations"]["destructiveHint"] is True
 
 
 def test_register_accepts_legacy_field_name(client: TestClient):

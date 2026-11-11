@@ -10,6 +10,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from device_agent.database import Base, UTCDateTime, utcnow
 
 
+class ToolPolicyAction(StrEnum):
+    """自动任务（由设备数据触发）调用某个设备工具时的处理方式。"""
+
+    ALLOW = "allow"  # 直接执行
+    CONFIRM = "confirm"  # 提交人工审批，批准后再执行
+    DENY = "deny"  # 拒绝（对所有来源生效）
+
+
 class DeviceType(StrEnum):
     IOT_SENSOR = "iot_sensor"
     SMART_CAMERA = "smart_camera"
@@ -38,7 +46,10 @@ class Device(Base):
     supported_data_types: Mapped[list[str]] = mapped_column(JSON, default=list)
     hardware_info: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     tools: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON, default=list, doc="MCP tools/list 结果缓存：[{name, description, input_schema}]"
+        JSON, default=list, doc="MCP tools/list 结果缓存：[{name, description, input_schema, annotations}]"
+    )
+    tool_policies: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, doc="按工具名覆盖默认策略：{tool_name: allow | confirm | deny}"
     )
     is_online: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -81,7 +92,45 @@ class IntentLog(Base):
     instruction: Mapped[str] = mapped_column(Text, default="")
     priority: Mapped[str] = mapped_column(String(20), default="low")
     task_id: Mapped[str | None] = mapped_column(String(100))
-    task_state: Mapped[str | None] = mapped_column(String(50))
+    category: Mapped[str] = mapped_column(String(30), default="other")
+    incident_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    task_state: Mapped[str | None] = mapped_column(String(50), doc="自动任务状态；suppressed 表示被冷却合并")
     result_text: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+
+
+class Incident(Base):
+    """事件：同一设备在一段时间内的相关触发归并到同一个事件，事件 ID 即自动任务的 A2A contextId。"""
+
+    __tablename__ = "incidents"
+
+    incident_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    trigger_count: Mapped[int] = mapped_column(Integer, default=0)
+    opened_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    last_triggered_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class Approval(Base):
+    """自动任务中需要人工确认的设备工具调用。批准后按原参数执行，不再经过模型。"""
+
+    __tablename__ = "approvals"
+
+    approval_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    device_id: Mapped[str] = mapped_column(String(100))
+    tool_name: Mapped[str] = mapped_column(String(200))
+    arguments: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    task_id: Mapped[str | None] = mapped_column(String(100))
+    context_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[Any] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

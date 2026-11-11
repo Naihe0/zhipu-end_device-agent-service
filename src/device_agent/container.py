@@ -22,13 +22,17 @@ from device_agent.a2a.card import base_card, build_card
 from device_agent.a2a.executor import DeviceAgentExecutor, LocalA2AClient
 from device_agent.config import Settings
 from device_agent.database import create_engine, create_session_factory, init_db, utcnow
+from device_agent.services.approvals import ApprovalService
 from device_agent.services.connections import DeviceConnectionHub
 from device_agent.services.devices import DeviceService
 from device_agent.services.event_store import EventStore, create_event_store
+from device_agent.services.incidents import IncidentService
 from device_agent.services.intent_monitor import IntentMonitor
 from device_agent.services.llm import LLMClient, create_llm
 from device_agent.services.mcp_gateway import ClientFactory, MCPGateway
-from device_agent.services.orchestrator import ConversationMemory, Orchestrator
+from device_agent.services.memory import ConversationMemory
+from device_agent.services.orchestrator import Orchestrator
+from device_agent.services.policy import Origin
 from device_agent.services.remote_agents import RemoteAgentService
 
 logger = logging.getLogger(__name__)
@@ -46,6 +50,8 @@ class Container:
     devices: DeviceService
     agents: RemoteAgentService
     hub: DeviceConnectionHub
+    incidents: IncidentService
+    approvals: ApprovalService
     orchestrator: Orchestrator
     task_store: DatabaseTaskStore
     push_store: DatabasePushNotificationConfigStore
@@ -74,15 +80,23 @@ class Container:
         devices = DeviceService(sessions, mcp, settings.device_offline_after_seconds)
         agents = RemoteAgentService(sessions, settings, transport=agent_transport)
         hub = DeviceConnectionHub(devices, store, settings.max_upload_bytes)
-        orchestrator = Orchestrator(llm, devices, agents, max_steps=settings.orchestrator_max_steps)
+        incidents = IncidentService(sessions, settings.incident_quiet_minutes)
+        approvals = ApprovalService(sessions, devices, settings.approval_ttl_minutes, notify=hub.send)
+        orchestrator = Orchestrator(
+            llm, devices, agents, approvals, max_steps=settings.orchestrator_max_steps
+        )
 
         card = base_card(settings)
         task_store = DatabaseTaskStore(engine)
         push_store = DatabasePushNotificationConfigStore(engine)
+        memory = ConversationMemory(
+            task_store,
+            approvals,
+            max_turns=settings.conversation_max_turns,
+            window_hours=settings.conversation_window_hours,
+        )
         handler = DefaultRequestHandler(
-            agent_executor=DeviceAgentExecutor(
-                orchestrator, ConversationMemory(settings.conversation_max_turns)
-            ),
+            agent_executor=DeviceAgentExecutor(orchestrator, memory),
             task_store=task_store,
             agent_card=card,
             push_config_store=push_store,
@@ -95,12 +109,17 @@ class Container:
             store,
             sessions,
             settings,
-            submit=lambda text, meta: local_client.send(text, metadata=meta),
+            incidents=incidents,
+            approvals=approvals,
+            submit=lambda text, meta, context_id: local_client.send(
+                text, metadata=meta, context_id=context_id, origin=Origin.DEVICE
+            ),
             notify=hub.send,
         )
         return cls(
             settings=settings, engine=engine, sessions=sessions, http=http, llm=llm, mcp=mcp, store=store,
-            devices=devices, agents=agents, hub=hub, orchestrator=orchestrator, task_store=task_store,
+            devices=devices, agents=agents, hub=hub, incidents=incidents, approvals=approvals,
+            orchestrator=orchestrator, task_store=task_store,
             push_store=push_store, handler=handler, local_client=local_client, monitor=monitor, card=card,
         )  # fmt: skip
 
@@ -116,7 +135,15 @@ class Container:
         probed = await self.devices.sweep(self.hub.connected_ids())
         trimmed = await self.store.trim_older_than(cutoff)
         purged = self.store.blobs.purge_older_than(cutoff)
-        return {"probed": probed, "events_trimmed": trimmed, "blobs_purged": purged}
+        closed = await self.incidents.close_stale()
+        expired = await self.approvals.expire_stale()
+        return {
+            "probed": probed,
+            "events_trimmed": trimmed,
+            "blobs_purged": purged,
+            "incidents_closed": closed,
+            "approvals_expired": expired,
+        }
 
     async def _maintenance_loop(self) -> None:
         while True:

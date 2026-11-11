@@ -59,13 +59,25 @@ class ScriptedLLM:
     calls: list[dict[str, Any]] = field(default_factory=list)
 
     async def generate(self, contents, *, system_instruction=None, tools=None, text_only=False):
-        self.calls.append({"contents": list(contents), "tools": tools, "text_only": text_only})
+        self.calls.append(
+            {"contents": list(contents), "tools": tools, "text_only": text_only, "system": system_instruction}
+        )
         reply = self.replies.pop(0) if self.replies else text_reply("(默认回复)")
         return reply(contents, tools) if callable(reply) else reply
 
     async def generate_json(self, contents, schema, *, system_instruction=None):
-        self.calls.append({"contents": list(contents), "schema": schema})
+        self.calls.append({"contents": list(contents), "schema": schema, "system": system_instruction})
         return self.json_replies.pop(0)
+
+    @property
+    def triage_calls(self) -> list[dict[str, Any]]:
+        """意图识别（结构化输出）调用。"""
+        return [c for c in self.calls if "schema" in c]
+
+    @property
+    def chat_calls(self) -> list[dict[str, Any]]:
+        """编排器（工具调用循环）调用。"""
+        return [c for c in self.calls if "schema" not in c]
 
     async def aclose(self) -> None:
         return None
@@ -198,7 +210,61 @@ CAMERA = {
 
 
 @pytest.fixture
+def camera_body() -> dict[str, Any]:
+    return dict(CAMERA)
+
+
+@pytest.fixture
 def camera(client: TestClient) -> dict[str, Any]:
     response = client.post("/api/devices", json=CAMERA)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+# ---------- 常用操作 ----------
+
+
+def text_of_parts(content: types.Content) -> str:
+    return "".join(p.text or "" for p in content.parts or [])
+
+
+def send_message(client: TestClient, text: str, context_id: str | None = None) -> dict[str, Any]:
+    """A2A 1.0 SendMessage，返回 Task。"""
+    message: dict[str, Any] = {"messageId": uuid.uuid4().hex, "role": "ROLE_USER", "parts": [{"text": text}]}
+    if context_id:
+        message["contextId"] = context_id
+    body = {"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": {"message": message}}
+    response = client.post("/api/a2a", json=body, headers={"A2A-Version": "1.0"})
+    assert response.status_code == 200, response.text
+    return response.json()["result"]["task"]
+
+
+def get_task(client: TestClient, task_id: str) -> dict[str, Any]:
+    body = {"jsonrpc": "2.0", "id": 1, "method": "GetTask", "params": {"id": task_id}}
+    return client.post("/api/a2a", json=body, headers={"A2A-Version": "1.0"}).json()["result"]
+
+
+def report(client: TestClient, payload: dict[str, Any], device_id: str = "camera_001") -> None:
+    response = client.post(f"/api/devices/{device_id}/events", json=payload)
+    assert response.status_code == 201, response.text
+
+
+def scan(client: TestClient) -> list[dict[str, Any]]:
+    """触发一次意图识别扫描，并等待自动任务执行完毕。"""
+    return client.post("/api/intents/scan", params={"wait_for_tasks": True}).json()
+
+
+def intent_analysis(**overrides) -> Any:
+    from device_agent.services.intent_monitor import IntentAnalysis
+
+    base = {
+        "intent_detected": True,
+        "category": "anomaly",
+        "intent_type": "overheating",
+        "confidence": 0.9,
+        "reasoning": "温度超过阈值 35°C",
+        "action_required": True,
+        "instruction": "办公室温度过高，请打开补光灯提示并读取传感器确认",
+        "priority": "high",
+    }
+    return IntentAnalysis(**(base | overrides))

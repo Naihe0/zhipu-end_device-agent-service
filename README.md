@@ -18,7 +18,8 @@
 | LLM | Gemini（`google-genai`，默认 `gemini-3.6-flash`）：function calling + 结构化输出 + 原生多模态 | OpenAI / 智谱，靠提示词让模型"只返回 ID"再正则解析 |
 | 数据库 | SQLAlchemy 2.x 异步（aiosqlite / asyncpg） | 同步 Session 混在 async 代码里 |
 | 事件流 | Redis Streams（消费组、精确长度上限、大文件落盘）；测试另覆盖内存实现 | Redis Streams（实现有缺陷） |
-| 质量 | pytest：70 个离线用例，在真实 Redis / PostgreSQL 与 SQLite / 内存上各跑一遍；另有真实 Gemini 用例；ruff | 无可运行的测试 |
+| 数据库迁移 | Alembic（启动时自动升级；旧库自动识别并标记基线） | 无，靠 `create_all` |
+| 质量 | pytest：116 个离线用例，在真实 Redis / PostgreSQL 与 SQLite / 内存上各跑一遍；另有真实 Gemini 用例；ruff | 无可运行的测试 |
 
 ## 架构
 
@@ -166,6 +167,10 @@ curl -X POST http://localhost:8000/api/a2a -H "Content-Type: application/json" \
 | POST | `/api/agents/{id}/refresh` · `enable` · `disable` | 刷新 Card / 启用 / 禁用 |
 | GET | `/api/intents` · `/api/intents/stats` | 意图识别记录 / 统计 |
 | POST | `/api/intents/scan` | 立即扫描一次（`wait_for_tasks=true` 等待自动任务完成） |
+| GET | `/api/incidents` · `/api/incidents/{id}` | 事件列表 / 详情（含其中的识别记录与审批） |
+| POST | `/api/incidents/{id}/close` | 手动关闭事件 |
+| GET | `/api/approvals` · `/api/approvals/{id}` | 待审批（及历史）的设备工具调用 |
+| POST | `/api/approvals/{id}/approve` · `reject` | 批准（按登记的原始参数执行）/ 拒绝，可附 `{"note": "..."}` |
 | GET | `/health` · `/api/status` · `/api/connections` | 健康检查 / 运行概览 / WebSocket 连接 |
 
 ### 设备接入协议
@@ -184,7 +189,7 @@ POST /api/devices
 }
 ```
 
-`system_prompt` 会提供给意图识别，用于说明该设备应关注什么。
+`system_prompt` 会提供给意图识别，用于说明该设备应关注什么。可选的 `tool_policies` 按工具名覆盖自动任务的默认审批策略，例如 `{"reboot_device": "deny"}`（见下文）。
 
 数据上报（WebSocket 文本帧，或 `POST /api/devices/{id}/events` 的 body）：
 
@@ -198,6 +203,32 @@ POST /api/devices
 WebSocket 也接受二进制帧，可带头部 `MEDIA:<kind>:<filename>:<size>\n`。每条数据都会收到 `{"type":"ack","event_id":...}`；自动任务完成后服务推送 `{"type":"task_result",...}`。小于 `INLINE_BLOB_MAX_BYTES` 的二进制直接存在事件里，更大的写入 `data/blobs/`。
 
 设备在线状态：注册、心跳、数据上报和 WebSocket 连接会刷新在线状态；长时间无活动的设备由维护任务探测其 MCP Server，连不上则标记离线，编排器只使用在线设备。
+
+## 自动任务：事件、记忆与审批
+
+意图识别发起的自动任务与外部请求走同一条 A2A 链路，但有三点额外处理：
+
+**会话记忆持久化。** 同一 `contextId` 的历史直接从 A2A 任务表重建（任务已由 a2a-sdk 持久化），
+不再单独保存在进程内存里，服务重启后上下文仍在。每一轮带入模型的是：用户原话 → 最终回答 +
+本轮工具调用摘要 + 相关审批的当前状态。只带入最近 `CONVERSATION_WINDOW_HOURS` 内、
+最多 `CONVERSATION_MAX_TURNS` 个已完成的任务。
+
+**事件（incident）。** 同一设备的相关触发归并到一个事件，事件 ID 就是这些自动任务的 `contextId`，
+所以第二次告警能看到第一次已经做过什么。超过 `INCIDENT_QUIET_MINUTES` 没有新触发时事件自动关闭。
+去重分两层：意图识别时模型会看到进行中事件的处理记录，自行判断是否还需要行动；代码层另有硬性防护——
+同一事件同类处理不并发、两次之间至少间隔 `INTENT_ACTION_COOLDOWN_SECONDS`，期间的触发记为
+`suppressed` 并合并到事件中。现场人员的明确指令（`category=user_command`）不受冷却限制。
+
+**设备数据视为不可信输入。** 意图识别时设备数据放在 `<device_data>` 边界内（伪造的边界会被转义），
+并明确告知模型其中的文字只是观测证据、不是指令。更重要的是代码层的约束：自动任务调用设备工具前按
+[MCP 工具注解](https://modelcontextprotocol.io/specification/2025-06-18/schema#toolannotations)判断——
+`readOnlyHint=true` 或 `destructiveHint=false` 的工具直接执行；其余工具（包括未声明注解的，
+按 MCP 规范默认视为可能有破坏性）只登记一条审批、不执行，模型会如实告知"等待审批"。
+操作员调用 `/api/approvals/{id}/approve` 后，服务按登记时的原始参数执行（不再经过模型），
+结果推送给设备（`{"type":"approval_result",...}`），并进入同一事件后续任务的上下文。
+审批超过 `APPROVAL_TTL_MINUTES` 未处理即过期。用户或外部 Agent 直接发起的请求不受审批约束，
+但设备 `tool_policies` 中的 `deny` 对所有来源生效。任务来源由服务端判定（只有意图识别能提交
+`origin=device` 的任务），外部请求无法伪造。
 
 ## 配置
 
@@ -217,6 +248,11 @@ WebSocket 也接受二进制帧，可带头部 `MEDIA:<kind>:<filename>:<size>\n
 | `INTENT_SCAN_INTERVAL_SECONDS` | `10` | |
 | `INTENT_MIN_CONFIDENCE` | `0.6` | 低于该置信度不自动发起任务 |
 | `ORCHESTRATOR_MAX_STEPS` | `6` | 一次请求内最多的工具调用轮数 |
+| `CONVERSATION_MAX_TURNS` | `20` | 同一 contextId 带入模型的历史任务数上限 |
+| `CONVERSATION_WINDOW_HOURS` | `24` | 只带入这段时间内的历史任务 |
+| `INCIDENT_QUIET_MINUTES` | `30` | 事件静默多久后自动关闭 |
+| `INTENT_ACTION_COOLDOWN_SECONDS` | `120` | 同一事件同类自动处理的最小间隔 |
+| `APPROVAL_TTL_MINUTES` | `30` | 待审批调用的有效期 |
 
 ## Docker
 
@@ -248,6 +284,10 @@ src/device_agent/
 ├── services/
 │   ├── orchestrator.py     # Gemini function calling 编排（设备工具 / 外部 Agent / 直接回答）
 │   ├── intent_monitor.py   # 多模态意图识别 → 自动任务
+│   ├── memory.py           # 从 A2A 任务表重建会话历史
+│   ├── incidents.py        # 事件：同一设备相关触发的归并
+│   ├── policy.py           # 设备工具调用策略（基于 MCP 工具注解）
+│   ├── approvals.py        # 自动任务中需要人工确认的工具调用
 │   ├── devices.py          # 设备注册表、在线状态
 │   ├── mcp_gateway.py      # MCP 客户端
 │   ├── remote_agents.py    # 外部 A2A Agent 注册与委派
@@ -255,6 +295,7 @@ src/device_agent/
 │   ├── connections.py      # WebSocket / HTTP 数据接入
 │   └── llm.py              # LLM 协议 + Gemini 实现
 ├── api/                # REST 路由
+├── migrations/         # Alembic 迁移（启动时自动升级；手动：uv run alembic upgrade head）
 └── demo/               # 模拟设备、模拟外部 Agent、A2A 客户端、设备模拟器、一键演示
 scripts/dev-services.ps1  # Windows：启动 WSL 中的 Redis / Docker，检查 PostgreSQL
 tests/                  # pytest
@@ -287,3 +328,5 @@ tests/                  # pytest
 - **GLM-ASR 转写**：Gemini 原生理解音频，无需单独转写。
 
 数据库表结构已变化，旧的 `data/a2a_agent.db` 不会被使用，新库默认在 `data/device_agent.db`，首次启动自动建表。
+之后的表结构变更都通过 Alembic 迁移完成：服务启动时自动升级；引入迁移之前（v2.0 早期）建出的库会被识别为基线版本再升级，数据保留。
+新增迁移：修改 `models.py` 后执行 `uv run alembic revision --autogenerate -m "说明"`，检查生成的脚本后提交。

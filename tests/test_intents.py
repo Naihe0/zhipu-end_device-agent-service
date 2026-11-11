@@ -16,7 +16,8 @@ def event_backend(request) -> str:
 def analysis(**overrides) -> IntentAnalysis:
     base = {
         "intent_detected": True,
-        "intent_type": "anomaly",
+        "category": "anomaly",
+        "intent_type": "overheating",
         "confidence": 0.9,
         "reasoning": "温度 41.5°C 超过阈值 35°C",
         "action_required": True,

@@ -8,6 +8,7 @@ license = { text = "MIT" }
 dependencies = [
     "a2a-sdk[http-server,sqlite]>=1.2.3",
     "aiosqlite>=0.22",
+    "alembic>=1.16",
     "fastapi>=0.162",
     "google-genai>=2.33",
     "httpx>=0.28",

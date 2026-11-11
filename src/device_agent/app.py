@@ -8,13 +8,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from device_agent.api import agents, devices, intents, system
+from device_agent.api import agents, approvals, devices, incidents, intents, system
 from device_agent.config import Settings, get_settings
 from device_agent.container import Container
 from device_agent.logging_setup import configure_logging
 from device_agent.security import BearerTokenMiddleware
+from device_agent.services.approvals import ApprovalNotFoundError, ApprovalStateError
 from device_agent.services.connections import IngestError
 from device_agent.services.devices import DeviceNotFoundError, DeviceValidationError
+from device_agent.services.incidents import IncidentNotFoundError
 from device_agent.services.remote_agents import (
     RemoteAgentConflictError,
     RemoteAgentError,
@@ -24,7 +26,10 @@ from device_agent.services.remote_agents import (
 ERROR_STATUS: dict[type[Exception], int] = {
     DeviceNotFoundError: 404,
     RemoteAgentNotFoundError: 404,
+    IncidentNotFoundError: 404,
+    ApprovalNotFoundError: 404,
     RemoteAgentConflictError: 409,
+    ApprovalStateError: 409,
     DeviceValidationError: 422,
     IngestError: 422,
     RemoteAgentError: 502,
@@ -70,7 +75,7 @@ def create_app(settings: Settings | None = None, *, container: Container | None 
 
         app.add_exception_handler(exc_type, handler)
 
-    for module in (system, devices, agents, intents):
+    for module in (system, devices, agents, intents, incidents, approvals):
         app.include_router(module.router)
 
     add_a2a_routes_to_fastapi(
